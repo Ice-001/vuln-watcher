@@ -1,0 +1,77 @@
+name: WatchVuln Initialize Database
+
+on:
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: '漏洞源 (逗号分隔)'
+        required: false
+        default: 'avd,ti,oscs,threatbook,seebug,struts2,kev,venustech'
+        type: string
+
+jobs:
+  init-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Create data directory
+        run: mkdir -p data/all
+
+      - name: Build
+        run: go build -o watchvuln ./main.go
+
+      - name: Run WatchVuln (Full Mode)
+        env:
+          DINGDING_ACCESS_TOKEN: ${{ secrets.DINGDING_ACCESS_TOKEN }}
+          DINGDING_SECRET: ${{ secrets.DINGDING_SECRET }}
+          SOURCES: ${{ github.event.inputs.sources }}
+          INTERVAL: 30m
+          ENABLE_CVE_FILTER: "true"
+          NO_FILTER: "false"
+          NO_START_MESSAGE: "true"
+          DIFF: "false"
+          DB_CONN: "sqlite3://data/vuln_v3.sqlite3"
+          MD_DIR: "./data/all"
+          NO_PUSH: "true"
+        run: |
+          ./watchvuln --once
+
+      - name: Show database stats
+        run: |
+          echo "=== Mark all vulns as pushed (skip initial push) ==="
+          sqlite3 data/vuln_v3.sqlite3 "UPDATE vuln_informations SET pushed = 1;"
+          echo "=== Database Stats ==="
+          sqlite3 data/vuln_v3.sqlite3 "SELECT COUNT(*) as total FROM vuln_informations;"
+          sqlite3 data/vuln_v3.sqlite3 "SELECT COUNT(*) as pushed FROM vuln_informations WHERE pushed=1;"
+          echo "=== MD Files ==="
+          ls -la data/all/
+
+      - name: Commit database
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update vuln database $(date +%Y-%m-%d)"
+          fi
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          force: true

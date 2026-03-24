@@ -1,0 +1,114 @@
+name: Release WatchVuln
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  push:
+    branches:
+      - 'release/**'
+      - 'main'
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (如 v2.7.1)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-cli:
+    name: Build cli
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows
+            arch: amd64
+            output: watchvuln-windows-amd64.exe
+          - os: darwin
+            arch: amd64
+            output: watchvuln-darwin-amd64
+          - os: darwin
+            arch: arm64
+            output: watchvuln-darwin-arm64
+          - os: linux
+            arch: amd64
+            output: watchvuln-linux-amd64
+          - os: linux
+            arch: arm64
+            output: watchvuln-linux-arm64
+          - os: linux
+            arch: arm
+            output: watchvuln-linux-arm
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+      GOOS: ${{ matrix.os }}
+      GOARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.22.2
+          cache: true
+      - run: go build -trimpath -ldflags "-w -s -extldflags '-static'" -o target/${{ matrix.output }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: target-${{ matrix.os }}-${{ matrix.arch }}
+          path: target/*
+
+  upload-release:
+    name: Release
+    needs: [ build-cli ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: target-*
+          merge-multiple: true
+          path: target
+      - run: ls -al target
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            VERSION=$(git rev-parse --short HEAD)
+          else
+            VERSION="latest"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "## Changes in $VERSION" > changelog.md
+          echo "" >> changelog.md
+          git log --pretty=format:"- %s (%h)" -n 10 >> changelog.md
+
+      - name: Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: target/*
+          body_path: changelog.md
+
+      - name: Create Release on main branch push
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.version != ''
+        uses: softprops/action-gh-release@v1
+        with:
+          files: target/*
+          body_path: changelog.md
+          tag_name: ${{ github.event.inputs.version }}
+          name: ${{ github.event.inputs.version }}

@@ -1,0 +1,119 @@
+name: WatchVuln Sync
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # UTC 02:00 = 北京时间 10:00
+    - cron: '0 7 * * *'  # UTC 07:00 = 北京时间 15:00
+  workflow_dispatch:
+    inputs:
+      no_push:
+        description: '禁用消息推送'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  scan-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout code (includes database)
+        uses: actions/checkout@v5
+
+      - name: Prepare data directory
+        run: |
+          mkdir -p data/all
+          ls -la data/
+          echo "=== Database Stats ==="
+          sqlite3 data/vuln_v3.sqlite3 "SELECT COUNT(*) as total FROM vuln_informations;"
+          sqlite3 data/vuln_v3.sqlite3 "SELECT COUNT(*) as pushed FROM vuln_informations WHERE pushed=1;"
+          echo "=== Sample vulns ==="
+          sqlite3 data/vuln_v3.sqlite3 "SELECT \`key\`, pushed FROM vuln_informations LIMIT 5;"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        run: go build -o watchvuln ./main.go
+
+      - name: Verify database before running
+        run: |
+          echo "=== Working Directory ==="
+          pwd
+          echo "=== Database File Check ==="
+          ls -la data/vuln_v3.sqlite3
+          file data/vuln_v3.sqlite3
+          echo "=== Database Content Check ==="
+          sqlite3 data/vuln_v3.sqlite3 "SELECT COUNT(*) as total FROM vuln_informations;"
+          sqlite3 data/vuln_v3.sqlite3 "SELECT COUNT(*) as pushed FROM vuln_informations WHERE pushed=1;"
+          sqlite3 data/vuln_v3.sqlite3 "SELECT COUNT(*) as not_pushed FROM vuln_informations WHERE pushed=0;"
+          echo "=== Sample Records ==="
+          sqlite3 data/vuln_v3.sqlite3 "SELECT key, title, pushed FROM vuln_informations ORDER BY id DESC LIMIT 3;"
+          echo "=== KEV records ==="
+          sqlite3 data/vuln_v3.sqlite3 "SELECT key, title, pushed FROM vuln_informations WHERE key LIKE '%KEV%' ORDER BY id DESC LIMIT 5;"
+
+      - name: Run WatchVuln (Diff Mode)
+        env:
+          DINGDING_ACCESS_TOKEN: ${{ secrets.DINGDING_ACCESS_TOKEN }}
+          DINGDING_SECRET: ${{ secrets.DINGDING_SECRET }}
+          NO_PUSH: ${{ github.event.inputs.no_push }}
+          DIFF: "true"
+          DB_CONN: "sqlite3://data/vuln_v3.sqlite3"
+          MD_DIR: "./data/all"
+        run: |
+          ./watchvuln
+
+      - name: Commit updated database
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/vuln_v3.sqlite3
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update vuln database $(date +%Y-%m-%d)"
+          fi
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          force: false
+
+      - name: Show stats
+        run: |
+          if [ -f data/vuln_v3.sqlite3 ]; then
+            echo "=== Database Stats ==="
+            sqlite3 data/vuln_v3.sqlite3 "SELECT COUNT(*) as total FROM vuln_informations;"
+            sqlite3 data/vuln_v3.sqlite3 "SELECT COUNT(*) as pushed FROM vuln_informations WHERE pushed=1;"
+            echo "=== MD Files ==="
+            ls -la data/all/ || true
+          fi
+
+      - name: Commit and push updates
+        run: |
+          if [ -f data/vuln_v3.sqlite3 ]; then
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git add data/
+            if git diff --cached --quiet; then
+              echo "No changes to commit"
+            else
+              git commit -m "Update vuln database $(date +%Y-%m-%d)"
+            fi
+          fi
+        continue-on-error: true
+
+      - name: Push changes
+        if: success()
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          force: true
