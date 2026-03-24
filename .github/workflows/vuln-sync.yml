@@ -2,8 +2,9 @@ name: WatchVuln Sync
 
 on:
   schedule:
+    - cron: '0 0 * * *'  # UTC 00:00 = 北京时间 08:00
     - cron: '0 2 * * *'  # UTC 02:00 = 北京时间 10:00
-    - cron: '0 7 * * *'  # UTC 07:00 = 北京时间 15:00
+    - cron: '0 6 * * *'  # UTC 06:00 = 北京时间 14:00
   workflow_dispatch:
     inputs:
       no_push:
